@@ -1,6 +1,6 @@
 # 本爬虫程序主要用于从中金所官网爬取个期货公司国债期货合约持仓数据
 # 作者： 季俊男
-# 编写日期：2018/9/18
+# 更新日期：2018/9/18
 
 import requests
 from bs4 import BeautifulSoup
