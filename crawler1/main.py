@@ -58,6 +58,7 @@ class PositionScrap(object):
         return data
 
     def get_intigrated_position(self, value):
+        """将不同合约的持仓数据加总，无视合约月份的区别"""
         if value == 1:
             contract_ym = self.long_position.keys()
             position = self.long_position
@@ -75,9 +76,10 @@ class PositionScrap(object):
                     inti_position[name] = position[cym][name]
         return inti_position
 
-
     def net_position(self, mode=0):
-        """计算各期货公司的净持仓，由于中金所只公布前二十的期货公司"""
+        """计算各期货公司的净持仓，由于中金所只公布买卖持仓前二十的期货公司，无买卖双边持仓数据的期货公司只计算单边持仓，
+        买单持仓为正数，卖单持仓为负数。模式0（mode=0)为将不同月份合约合并起来计算，模式1（mode=1）则将不同月份合约分开
+        计算并只计算同时拥有买卖双边持仓的期货公司的净持仓"""
         net =[]
         contract_ym = self.long_position.keys()
         if mode == 0:
@@ -106,11 +108,11 @@ class PositionScrap(object):
 
 
 if __name__ == "__main__":
-    dt = datetime.date(2018, 9, 19)
-    for contract in ["TS", "TF", "T"]:
+    dt = datetime.date(2018, 8, 17)
+    for contract in ["TS"]:
         print()
         lll = PositionScrap(dt,contract)
-        for n in lll.net_position():
+        for n in lll.net_position(1):
             print()
             for m in n:
                 print(m, end="   ")
