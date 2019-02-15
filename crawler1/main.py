@@ -1,11 +1,48 @@
-# 本爬虫程序主要用于从中金所官网爬取个期货公司国债期货合约持仓数据
+# 本爬虫程序主要用于从中金所官网爬取个期货公司国债期货合约持仓数据并存放至数据库
 # 作者： 季俊男
-# 更新日期：2018/9/25
+# 创建日期：2018/9/25
+# 更新日期：2019/2/15
 
 import requests
 from bs4 import BeautifulSoup
 import datetime
+import pymysql
 
+
+def create_table(cur, table):
+    """"创建数据库以及表"""
+    sql_dts = """
+    create table if not exists dts(
+    `dt` date not null primary key comment '中金所交易日期',
+    `seq` int not null comment '交易日期顺序'
+    )ENGINE=InnoDB DEFAULT CHARSET = utf8MB3 COMMENT = '中金所交易日期'
+    """
+    sql_positions = """
+    create table if not exists positions(
+    `dt` date not null comment '中金所交易日期',
+    `name` char(10) not null comment '期货公司',
+    `contract` char(10) not null comment '期货合约',
+    `volume` int default null comment '成交量',
+    `volume_delta` int default null comment '成交量较上一日变化',
+    `volume_rank` int default null comment '成交量排名',
+    `buy` int default null comment '持买单量',
+    `buy_delta` int default null comment '持买单量较上一日变化',
+    `buy_rank` int default null comment '持买单量排名',
+    `sell` int default null comment '持卖单量',
+    `sell_delta` int default null comment '持卖单量较上一日变化',
+    `sell_rank` int default null comment '持卖单量排名',
+    `net` int default null comment '净持仓',
+    `net_delta` int default null comment '净持仓较上一日变化',
+    `net_rank` int default null comment '净持仓排名',
+    constraint pk primary key(dt, name, contract)
+    ) ENGINE=InnoDB DEFAULT CHARSET = utf8MB3 COMMENT = '期货公司持仓信息表'
+    """
+    if table is None:
+        sqls = [sql_dts, sql_positions]
+        for sql in sqls:
+            _ = cur.execute(sql)
+    else:
+        _ = cur.execute("sql_{}".format(table))
 
 def sort_long_short_net(e: str):
     if e == "买":
@@ -103,17 +140,48 @@ class PositionScrap(object):
                 name = long_name.intersection(short_name)
                 for n in name:
                     net.append((cym, n, self.long_position[cym][n] - self.short_position[cym][n]))
-            net.sort(key=lambda x: (x[0], x[2]),reverse = True)
+            net.sort(key=lambda x: (x[0], x[2]), reverse=True)
         return net
 
 
+class PositionCrawler(object):
+    """用于爬取并整理向数据库内输入的数据"""
+    def __init__(self, dt: datetime.date, contract: str):
+        self.dt = dt
+        self.sdt = dt.strftime("%Y%m%d")
+        self.contract = contract
+        self.url = self.get_url()
+        self.soup = self.get_soup()
+
+    def get_url(self):
+        """由合约代码与日期生成get请求的目标url"""
+        ym = self.sdt[0:6]
+        d = self.sdt[6:8]
+        url = r"http://www.cffex.com.cn/sj/ccpm/{}/{}/{}.xml".format(ym, d, self.contract)
+        return url
+
+    def get_soup(self):
+        """读取目标url的xml内容并以beautifulsoup进行解析"""
+        res = requests.get(self.url)
+        soup = BeautifulSoup(res.content, "lxml")
+        return soup
+
+    def get_data(self):
+        """爬取数据并整理为可以写入positions表的"""
+
+
+
+
+
+
+
 if __name__ == "__main__":
-    dt = datetime.date(2018, 8, 17)
-    for contract in ["TS"]:
-        print()
-        lll = PositionScrap(dt,contract)
-        for n in lll.net_position(1):
-            print()
-            for m in n:
-                print(m, end="   ")
+    db = pymysql.connect("localhost", "root", "root", charset="utf8")
+    cur = db.cursor()
+    cur.execute("use future_position")
+    create_table(cur, None)
+
+
+
+
 
