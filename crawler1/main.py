@@ -5,7 +5,7 @@
 
 import requests
 from bs4 import BeautifulSoup
-import datetime
+import datetime as dtt
 import pymysql
 
 
@@ -58,7 +58,7 @@ def sort_long_short_net(e: str):
 
 class PositionScrap(object):
     """类PositionScrap用于从中金所官网上爬取期货合约的持仓数量信息，并提供计算净持仓的方法"""
-    def __init__(self, dt: datetime.date, contract: str):
+    def __init__(self, dt: dtt.date, contract: str):
         self.dt = dt
         self.sdt = dt.strftime("%Y%m%d")
         self.contract = contract
@@ -146,10 +146,12 @@ class PositionScrap(object):
 
 class PositionCrawler(object):
     """用于爬取并整理向数据库内输入的数据"""
-    def __init__(self, dt: datetime.date, contract: str):
+    def __init__(self, dt: dtt.date, contract: str, db, cur):
         self.dt = dt
         self.sdt = dt.strftime("%Y%m%d")
         self.contract = contract
+        self.db = db
+        self.cur = cur
         self.url = self.get_url()
         self.soup = self.get_soup()
 
@@ -167,19 +169,50 @@ class PositionCrawler(object):
         return soup
 
     def get_data(self):
-        """爬取数据并整理为可以写入positions表的"""
+        """爬取数据并整理为可以写入positions表的数据结构"""
+        data = {}
+        for tag in self.soup.find_all("data"):
+            contract = tag.instrumentid.string
+            name = tag.shortname.string
+            value = int(tag.attrs["value"])
+            if contract not in data:
+                data[contract] = {}
+            if name not in data[contract]:
+                data[contract][name] = [None for _ in range(12)]
+            data[contract][name][3 * value: 3 * value + 3] = [int(tag.volume.string),
+                                                              int(tag.varvolume.string),
+                                                              int(tag.rank.string)]
+        # 将data内的字典数据拓展为二维列表，该种形式的数据可以用于插入数据库表positions
+        res = []
+        for key_contract, value_contract in data.items():
+            for key_name, value_name in value_contract.items():
+                res_data = [self.dt, key_name, key_contract, *value_name]
+                res.append((res_data,))
 
+        return res
 
-
-
-
+    def insert_into_positions(self):
+        """"向数据库future的positions表中插入数据"""
+        data = self.get_data()
+        sql = """insert into positions values %s"""
+        try:
+            self.cur.executemany(sql, data)
+        except pymysql.err.IntegrityError as e:
+            self.db.rollback()
+            print(e)
+        else:
+            self.db.commit()
 
 
 if __name__ == "__main__":
     db = pymysql.connect("localhost", "root", "root", charset="utf8")
     cur = db.cursor()
     cur.execute("use future_position")
-    create_table(cur, None)
+    # create_table(cur, None)
+    dt = dtt.date(2019, 2, 15)
+    crawler = PositionCrawler(dt, "T", db, cur)
+    # print(crawler.get_data())
+    crawler.insert_into_positions()
 
 
 
