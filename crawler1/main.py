@@ -144,6 +144,28 @@ class PositionScrap(object):
         return net
 
 
+class Data(object):
+    """本类用于从mysql中提取相应条件的数据"""
+    def __init__(self, sql, cur, args=None):
+        self.sql = sql
+        self.cur = cur
+        self.args = args
+        self.data = Data.get_data(self)
+
+    def __str__(self):
+        return str(self.data)
+
+    __repr__ = __str__
+
+    def get_data(self):
+        _ = self.cur.execute(self.sql, self.args)
+        data = self.cur.fetchall()
+        return data
+
+    def select_col(self, col):
+        return [d[col] for d in self.data]
+
+
 class PositionCrawler(object):
     """用于爬取并整理向数据库内输入的数据"""
     def __init__(self, dt: dtt.date, contract: str, db, cur):
@@ -186,9 +208,17 @@ class PositionCrawler(object):
         res = []
         for key_contract, value_contract in data.items():
             for key_name, value_name in value_contract.items():
-                res_data = [self.dt, key_name, key_contract, *value_name]
-                res.append((res_data,))
-
+                if value_name[3] is not None and value_name[6] is not None:
+                    value_name[9] = value_name[3] - value_name[6]
+                    value_name[10] = value_name[4] - value_name[7]
+                elif value_name[3] is not None:
+                    value_name[9] = value_name[3]
+                    value_name[10] = value_name[4]
+                elif value_name[6] is not None:
+                    value_name[9] = -value_name[6]
+                    value_name[10] = -value_name[7]
+                r = [self.dt, key_name, key_contract, *value_name]
+                res.append((r,))
         return res
 
     def insert_into_positions(self):
@@ -203,6 +233,42 @@ class PositionCrawler(object):
         else:
             self.db.commit()
 
+    def update_positions(self):
+        """insert_position方法调用时不能产生net_rank字段的数据，改字段需要根据已拥有的net字段数据进行计算"""
+        sql_select = """
+        select dt, name, contract, net from positions 
+        where dt = %s and net is not null
+        order by contract asc, net desc
+        """
+        data_select = Data(sql_select, self.cur, (self.dt,)).data
+        data_update = []
+        i = 1
+        contract = data_select[0][2]
+        for ds in data_select:
+            if ds[2] != contract:
+                i = 1
+                contract = ds[2]
+            du = [i, ds[0], ds[1], ds[2]]
+            data_update.append(du)
+            i += 1
+        sql_update = """
+        update positions
+        set net_rank = %s
+        where dt = %s and name = %s and contract = %s
+        """
+        try:
+            self.cur.executemany(sql_update, data_update)
+        except pymysql.err.IntegrityError as e:
+            self.db.rollback()
+            print(e)
+        else:
+            self.db.commit()
+
+    def insert(self):
+        """将insert_into_positions方法与update_positions"""
+        self.insert_into_positions()
+        self.update_positions()
+
 
 if __name__ == "__main__":
     db = pymysql.connect("localhost", "root", "root", charset="utf8")
@@ -212,7 +278,7 @@ if __name__ == "__main__":
     dt = dtt.date(2019, 2, 15)
     crawler = PositionCrawler(dt, "T", db, cur)
     # print(crawler.get_data())
-    crawler.insert_into_positions()
+    crawler.insert()
 
 
 
