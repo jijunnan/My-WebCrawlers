@@ -7,6 +7,7 @@ import requests
 from bs4 import BeautifulSoup
 import datetime as dtt
 import pymysql
+import sys
 
 
 def create_table(cur, table):
@@ -43,105 +44,6 @@ def create_table(cur, table):
             _ = cur.execute(sql)
     else:
         _ = cur.execute("sql_{}".format(table))
-
-def sort_long_short_net(e: str):
-    if e == "买":
-        res = 1
-    elif e == "净":
-        res = 0
-    elif e == "卖":
-        res = -1
-    else:
-        raise TypeError("错误的参数值e")
-    return res
-
-
-class PositionScrap(object):
-    """类PositionScrap用于从中金所官网上爬取期货合约的持仓数量信息，并提供计算净持仓的方法"""
-    def __init__(self, dt: dtt.date, contract: str):
-        self.dt = dt
-        self.sdt = dt.strftime("%Y%m%d")
-        self.contract = contract
-        self.url = self.get_url()
-        self.soup = self.get_soup()
-        self.long_position = self.get_data_by_value(1)
-        self.short_position = self.get_data_by_value(2)
-        self.inti_long_position = self.get_intigrated_position(1)
-        self.inti_short_position = self.get_intigrated_position(2)
-
-    def get_url(self):
-        """由合约代码与日期生成get请求的目标url"""
-        ym = self.sdt[0:6]
-        d = self.sdt[6:8]
-        url = r"http://www.cffex.com.cn/sj/ccpm/{}/{}/{}.xml".format(ym, d, self.contract)
-        return url
-
-    def get_soup(self):
-        """读取目标url的xml内容并以beautifulsoup进行解析"""
-        res = requests.get(self.url)
-        soup = BeautifulSoup(res.content, "lxml")
-        return soup
-
-    def get_data_by_value(self, value):
-        """根据data标签的value值来确定买单持仓（value=1）还是卖单持仓（value=2）以及成交量（value=0）
-        以二维列表形式返还结果"""
-        data = {}
-        for tag in self.soup.find_all("data", {"value": value}):
-            try:
-                data[tag.instrumentid.string][tag.shortname.string] = int(tag.volume.string)
-            except KeyError as e:
-                data[tag.instrumentid.string] = {}
-                data[tag.instrumentid.string][tag.shortname.string] = int(tag.volume.string)
-        return data
-
-    def get_intigrated_position(self, value):
-        """将不同合约的持仓数据加总，无视合约月份的区别"""
-        if value == 1:
-            contract_ym = self.long_position.keys()
-            position = self.long_position
-        elif value == 2:
-            contract_ym = self.short_position.keys()
-            position = self.short_position
-        else:
-            raise TypeError("错误的value参数")
-        inti_position = {}
-        for cym in contract_ym:
-            for name in position[cym].keys():
-                try:
-                    inti_position[name] += position[cym][name]
-                except KeyError as e:
-                    inti_position[name] = position[cym][name]
-        return inti_position
-
-    def net_position(self, mode=0):
-        """计算各期货公司的净持仓，由于中金所只公布买卖持仓前二十的期货公司，无买卖双边持仓数据的期货公司只计算单边持仓，
-        买单持仓为正数，卖单持仓为负数。模式0（mode=0)为将不同月份合约合并起来计算，模式1（mode=1）则将不同月份合约分开
-        计算并只计算同时拥有买卖双边持仓的期货公司的净持仓"""
-        net =[]
-        contract_ym = self.long_position.keys()
-        if mode == 0:
-            long_name = set(self.inti_long_position.keys())
-            short_name = set(self.inti_short_position.keys())
-            inter_name = long_name & short_name
-            diff_long_name = long_name - inter_name
-            diff_short_name = short_name - inter_name
-            for name in inter_name:
-                net.append((name, self.inti_long_position[name] - self.inti_short_position[name], "净"))
-            for name in diff_long_name:
-                net.append((name, self.inti_long_position[name], "买"))
-            for name in diff_short_name:
-                net.append((name, -self.inti_short_position[name], "卖"))
-            net.sort(key=lambda x: (sort_long_short_net(x[2]), x[1]), reverse=True)
-
-        elif mode == 1:
-            for cym in contract_ym:
-                long_name = set(self.long_position[cym].keys())
-                short_name = set(self.short_position[cym].keys())
-                name = long_name.intersection(short_name)
-                for n in name:
-                    net.append((cym, n, self.long_position[cym][n] - self.short_position[cym][n]))
-            net.sort(key=lambda x: (x[0], x[2]), reverse=True)
-        return net
 
 
 class Data(object):
@@ -241,6 +143,9 @@ class PositionCrawler(object):
         order by contract asc, net desc
         """
         data_select = Data(sql_select, self.cur, (self.dt,)).data
+        if not data_select:
+            # 当data_select仅包含一个None值时引发一个SystemExit异常，用于捕获
+            sys.exit()
         data_update = []
         i = 1
         contract = data_select[0][2]
@@ -267,7 +172,41 @@ class PositionCrawler(object):
     def insert(self):
         """将insert_into_positions方法与update_positions"""
         self.insert_into_positions()
-        self.update_positions()
+        try:
+            # 若当日无数据记录（例如非交易），则会引发self.update_positions的IndexError(源自于其中读取合约名称的语句
+            # 但实际上data_select是一个只包含一个None的列表,进而引发一个SystemExit异常
+            self.update_positions()
+        except SystemExit as _:
+            pass
+
+
+class BatchInsert(object):
+    """本类用于批量向数据表positions内插入连续日期内的数据，类接受一个开始日期与结束日期，自动生成期间日期，然后调用
+    PostionCrawler"""
+    def __init__(self, dt1: dtt.date, dt2: dtt.date, db, cur):
+        self.dt1 = dt1
+        self.dt2 = dt2
+        self.db = db
+        self.cur = cur
+        self.dts = self.get_dts()
+
+    def get_dts(self):
+        """生成开始日期与结束日期之间的"""
+        dts = []
+        dt = self.dt1
+        while dt <= self.dt2:
+            dts.append(dt)
+            dt += dtt.timedelta(days=1)
+        return dts
+
+    def batch_insert(self):
+        """调用PositionCrawler类"""
+        for contract in ["TS", "TF", "T"]:
+            print(contract)
+            for dt in self.dts:
+                print(dt)
+                crawler = PositionCrawler(dt, contract, self.db, self.cur)
+                crawler.insert()
 
 
 if __name__ == "__main__":
@@ -275,10 +214,13 @@ if __name__ == "__main__":
     cur = db.cursor()
     cur.execute("use future_position")
     # create_table(cur, None)
-    dt = dtt.date(2019, 2, 15)
-    crawler = PositionCrawler(dt, "T", db, cur)
-    # print(crawler.get_data())
-    crawler.insert()
+    dt1 = dtt.date(2019, 1, 1)
+    dt2 = dtt.date(2019, 2, 18)
+    bat_insert = BatchInsert(dt1, dt2, db, cur)
+    bat_insert.batch_insert()
+    # crawler = PositionCrawler(dt1, "TS", db, cur)
+    # crawler.insert()
+
 
 
 
